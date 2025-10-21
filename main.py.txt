@@ -1,0 +1,110 @@
+
+
+!pip -q install google-generativeai SpeechRecognition
+
+import google.generativeai as genai
+import speech_recognition as sr
+from IPython.display import Javascript, display
+from google.colab import output
+from base64 import b64decode
+import time
+
+
+GEMINI_API_KEY = "place your api keyy here"
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-2.0-flash')
+chat = model.start_chat(history=[])
+
+# Global to store audio
+audio_data = None
+
+def save_audio(data):
+    global audio_data
+    audio_data = b64decode(data)
+
+output.register_callback('notebook.saveAudio', save_audio)
+
+RECORD_AUDIO_JS = """
+async function recordAudio() {
+  const sleep = t => new Promise(resolve => setTimeout(resolve, t));
+  const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+  const mediaRecorder = new MediaRecorder(stream);
+  const audioChunks = [];
+  mediaRecorder.ondataavailable = event => audioChunks.push(event.data);
+  mediaRecorder.onstop = () => {
+    const audioBlob = new Blob(audioChunks);
+    const reader = new FileReader();
+    reader.readAsDataURL(audioBlob);
+    reader.onloadend = () => {
+      const base64data = reader.result.split(',')[1];
+      google.colab.kernel.invokeFunction('notebook.saveAudio', [base64data], {});
+    };
+  };
+  mediaRecorder.start();
+  await sleep(10000); // Record for 10 seconds
+  mediaRecorder.stop();
+  stream.getTracks().forEach(track => track.stop());
+}
+recordAudio();
+"""
+
+def transcribe_audio(audio_bytes):
+    recognizer = sr.Recognizer()
+    audio = sr.AudioData(audio_bytes, sample_rate=16000, sample_width=2)
+    try:
+        return recognizer.recognize_google(audio)
+    except:
+        return None
+
+# -------------------------------
+# Main Loop
+# -------------------------------
+print("??? AB Chatbot ready! (Gemini 2.0 Flash)")
+print("Commands: 'text' ? type, 'voice' ? speak, 'quit' ? exit\n")
+
+while True:
+    mode = input("Enter mode (text/voice/quit): ").strip().lower()
+
+    if mode == "quit":
+        print("\n?? Goodbye!")
+        break
+
+    elif mode == "text":
+        user_input = input("You (text): ").strip()
+        if not user_input:
+            print("?? Empty input. Try again.\n")
+            continue
+
+    elif mode == "voice":
+        print("?? Recording for 10 seconds... (allow mic access in browser)")
+        display(Javascript(RECORD_AUDIO_JS))
+        # Wait for audio
+        for _ in range(20):  # Wait up to 10 sec
+            if audio_data is not None:
+                break
+            time.sleep(0.5)
+        else:
+            print("?? No audio received. Try again.\n")
+            continue
+
+        print("?? Transcribing...")
+        user_input = transcribe_audio(audio_data)
+        audio_data = None  # reset
+        if not user_input:
+            print("?? Could not understand audio.\n")
+            continue
+        print(f"You (voice): {user_input}")
+
+    else:
+        print("? Invalid mode. Use 'text', 'voice', or 'quit'.\n")
+        continue
+
+    # Send to Gemini
+    try:
+        print("?? Gemini:", end=" ", flush=True)
+        response = chat.send_message(user_input, stream=True)
+        for chunk in response:
+            print(chunk.text, end="", flush=True)
+        print("\n")
+    except Exception as e:
+        print(f"\n?? Error: {e}\n")
